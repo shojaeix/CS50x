@@ -1,39 +1,55 @@
 package main
 
 import (
-	"encoding/json"
+	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
+	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"log"
 	"net/http"
 	"strconv"
-
-	"gorm.io/driver/mysql"
 )
 
 var myDB *gorm.DB
 
 type Book struct {
 	gorm.Model
-	Name        string
-	PublishYear int64
-	Author      string
-	Description string
-	Pages       int64
+	Name        string `form:"name"`
+	PrintYear   int64  `form:"printYear"`
+	Author      string `form:"author"`
+	Description string `form:"description"`
+	PageNumber  int64  `form:"pageNumber"`
 }
 
-type User struct {
-	gorm.Model
-	UserName string
-	Email    string
-	Password string
+type JsonError struct {
+	Error string
 }
 
 func main() {
 	connectToDB()
-	log.Println("Server started on: http://localhost:8080")
-	http.HandleFunc("/create", CreateBook)
-	http.HandleFunc("/get", GetBook)
-	panic(http.ListenAndServe(":8080", nil))
+	serve()
+}
+
+func serve() {
+	e := echo.New()
+	// Routes
+
+	e.GET("/books", AllBooks)
+	e.GET("/books/:id", GetBook)
+
+	// login
+	h := &handler{}
+	e.POST("/login", h.login)
+	e.POST("/register", h.Register)
+	var protect = middleware.JWTWithConfig(middleware.JWTConfig{
+		SigningKey: []byte("secret"),
+	})
+	e.PUT("/books", CreateBook, protect)
+	e.DELETE("/books/:id", DeleteBook, protect)
+
+	// Start server
+	log.Println("Server Starting on: http://localhost:8080")
+	e.Logger.Fatal(e.Start(":8080"))
 }
 
 func connectToDB() {
@@ -50,99 +66,114 @@ func connectToDB() {
 	myDB = db
 }
 
-func CreateUser() {
-
-}
-
-func CreateBook(w http.ResponseWriter, r *http.Request) {
+func CreateBook(c echo.Context) error {
 	var err error
-	if r.Method == "PUT" {
-		b := Book{
-			Name:        r.FormValue("name"),
-			Author:      r.FormValue("author"),
-			Description: r.FormValue("description"),
-		}
+	b := Book{}
 
-		if r.FormValue("PublishYear") != "" {
-			b.PublishYear, err = strconv.ParseInt(r.FormValue("PublishYear"), 10, 32)
-			if err != nil {
-				http.Error(w, err.Error(), 400)
-				return
-			}
-		}
-
-		if r.FormValue("pages") != "" {
-			b.Pages, err = strconv.ParseInt(r.FormValue("pages"), 10, 32)
-			if err != nil {
-				http.Error(w, err.Error(), 400)
-				return
-			}
-		}
-
-		tx := myDB.Create(&b)
-		if tx.Error != nil {
-			http.Error(w, tx.Error.Error(), 400)
-			return
-		}
-
-		jData, err := json.Marshal(b)
-		if err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, err = w.Write(jData)
-		if err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		return
-	} else {
-		http.Redirect(w, r, "/", 301)
-	}
-}
-
-func GetBook(w http.ResponseWriter, r *http.Request) {
-	var err error
-	if r.Method != "GET" {
-		http.Redirect(w, r, "/", 301)
-		return
+	err = c.Bind(&b)
+	if err != nil {
+		return c.String(http.StatusBadRequest, "")
 	}
 
-	idString := r.FormValue("id")
+	if b.PageNumber == 0 {
+		return c.String(http.StatusBadRequest, "page number is required")
+	}
+
+	if b.Name == "" {
+		return c.String(http.StatusBadRequest, "name is required")
+	}
+
+	if b.PrintYear == 0 {
+		return c.String(http.StatusBadRequest, "print year is required")
+	}
+
+	if b.Author == "" {
+		return c.String(http.StatusBadRequest, "author is required")
+	}
+
+	if b.Description == "" {
+		return c.String(http.StatusBadRequest, "description is required")
+	}
+
+	tx := myDB.Create(&b)
+	if tx.Error != nil {
+		return c.String(http.StatusInternalServerError, "")
+	}
+
+	return c.JSON(http.StatusOK, b)
+}
+
+func GetBook(c echo.Context) (err error) {
+	idString := c.Param("id")
 	var id int64
 	if idString != "" {
 		id, err = strconv.ParseInt(idString, 10, 32)
 		if err != nil {
-			http.Error(w, err.Error(), 400)
-			return
+			return c.String(http.StatusBadRequest, err.Error())
 		}
 	} else {
-		http.Error(w, "id is empty", 400)
-		return
+		return c.String(http.StatusBadRequest, "id is empty")
 	}
 
 	b := Book{}
 	tx := myDB.Find(&b, id)
 	if tx.Error != nil {
-		http.Error(w, tx.Error.Error(), 400)
-		return
+		return c.String(http.StatusBadRequest, "invalid value for page parameter")
 	}
 
 	if b.ID == 0 {
-		http.Error(w, "book not found", 404)
-		return
+		return c.String(http.StatusNotFound, "book not found")
 	}
 
-	jData, err := json.Marshal(b)
-	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
+	return c.JSON(http.StatusOK, b)
+}
+
+func DeleteBook(c echo.Context) (err error) {
+	idString := c.Param("id")
+	var id int64
+	if idString != "" {
+		id, err = strconv.ParseInt(idString, 10, 32)
+		if err != nil {
+			return c.String(http.StatusBadRequest, err.Error())
+		}
+	} else {
+		return c.String(http.StatusBadRequest, "id is empty")
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_, err = w.Write(jData)
-	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
+
+	b := Book{}
+	tx := myDB.Find(&b, id)
+	if tx.Error != nil {
+		return c.String(http.StatusBadRequest, "invalid value for page parameter")
 	}
+
+	if b.ID == 0 {
+		return c.String(http.StatusNotFound, "book not found")
+	}
+
+	tx = myDB.Delete(&b)
+	if tx.Error != nil {
+		return c.String(http.StatusInternalServerError, "deleted")
+	}
+
+	return c.JSON(http.StatusOK, b)
+}
+
+func AllBooks(c echo.Context) (err error) {
+	pageString := c.FormValue("page")
+	var page int64 = 1 // default
+	if pageString != "" {
+		page, err = strconv.ParseInt(pageString, 10, 32)
+		if err != nil {
+			return c.String(http.StatusBadRequest, "invalid value for page parameter")
+		}
+	}
+
+	var books []Book
+
+	perPage := 10
+	tx := myDB.Offset(int(page-1) * perPage).Limit(10).Find(&books)
+	if tx.Error != nil {
+		return c.String(http.StatusInternalServerError, tx.Error.Error())
+	}
+	return c.JSON(http.StatusCreated, books)
 }
